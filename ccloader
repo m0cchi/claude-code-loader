@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PROGRAM_NAME="${0##*/}"
+STORAGE_ROOT="${HOME}/.claude-code-loader"
+REPOSITORIES_DIR="${STORAGE_ROOT}/repositories"
+
+usage() {
+  cat <<EOF
+Usage:
+  ${PROGRAM_NAME} add <name> <gitrepository>
+  ${PROGRAM_NAME} update
+  ${PROGRAM_NAME} load [--all] <name>
+EOF
+}
+
+log() {
+  printf '%s\n' "$*"
+}
+
+error() {
+  printf '%s\n' "$*" >&2
+}
+
+ensure_storage() {
+  mkdir -p "${REPOSITORIES_DIR}"
+}
+
+repo_path_for() {
+  local name="$1"
+  printf '%s\n' "${REPOSITORIES_DIR}/${name}"
+}
+
+require_git() {
+  if ! command -v git >/dev/null 2>&1; then
+    error "git is required"
+    exit 1
+  fi
+}
+
+find_nearest_claude_dir() {
+  local dir
+  dir="$(pwd)"
+
+  while [[ "${dir}" != "/" ]]; do
+    if [[ -d "${dir}/.claude" ]]; then
+      printf '%s\n' "${dir}/.claude"
+      return 0
+    fi
+    dir="$(dirname "${dir}")"
+  done
+
+  return 1
+}
+
+list_source_entries() {
+  local source_claude="$1"
+  local entry
+
+  shopt -s nullglob dotglob
+  for entry in "${source_claude}"/*; do
+    [[ -e "${entry}" ]] || continue
+    if [[ "${entry##*/}" == .* ]]; then
+      continue
+    fi
+    printf '%s\n' "${entry##*/}"
+  done
+  shopt -u nullglob dotglob
+}
+
+join_by() {
+  local delimiter="$1"
+  shift
+  local first=1
+  local item
+
+  for item in "$@"; do
+    if [[ ${first} -eq 1 ]]; then
+      printf '%s' "${item}"
+      first=0
+    else
+      printf '%s%s' "${delimiter}" "${item}"
+    fi
+  done
+}
+
+prompt_for_selection() {
+  local -n options_ref=$1
+  local input
+  local token
+  local index
+  local -a selected=()
+  local -A seen=()
+
+  while true; do
+    printf 'Select entries by number (space or comma separated): ' >&2
+    IFS= read -r input || return 1
+    input="${input//,/ }"
+    selected=()
+    seen=()
+
+    if [[ -z "${input// }" ]]; then
+      error "No selection provided"
+      continue
+    fi
+
+    for token in ${input}; do
+      if [[ ! "${token}" =~ ^[0-9]+$ ]]; then
+        error "Invalid selection: ${token}"
+        selected=()
+        break
+      fi
+
+      index=$((token - 1))
+      if (( index < 0 || index >= ${#options_ref[@]} )); then
+        error "Selection out of range: ${token}"
+        selected=()
+        break
+      fi
+
+      if [[ -z "${seen[${index}]+x}" ]]; then
+        selected+=("${options_ref[${index}]}")
+        seen["${index}"]=1
+      fi
+    done
+
+    if (( ${#selected[@]} == 0 )); then
+      continue
+    fi
+
+    printf '%s\n' "${selected[@]}"
+    return 0
+  done
+}
+
+cmd_add() {
+  if [[ $# -ne 2 ]]; then
+    usage
+    exit 1
+  fi
+
+  local name="$1"
+  local repository="$2"
+  local destination
+
+  destination="$(repo_path_for "${name}")"
+  ensure_storage
+  require_git
+
+  if [[ -e "${destination}" ]]; then
+    error "Repository name already exists: ${name}"
+    exit 1
+  fi
+
+  git clone "${repository}" "${destination}"
+
+  if [[ ! -d "${destination}/.claude" ]]; then
+    error "Warning: registered '${name}', but ${repository} does not contain a .claude directory"
+  fi
+}
+
+cmd_update() {
+  if [[ $# -ne 0 ]]; then
+    usage
+    exit 1
+  fi
+
+  local repo_dir
+  local repo_name
+  local -a successes=()
+  local -a failures=()
+
+  ensure_storage
+  require_git
+
+  shopt -s nullglob
+  for repo_dir in "${REPOSITORIES_DIR}"/*; do
+    [[ -d "${repo_dir}" ]] || continue
+    repo_name="${repo_dir##*/}"
+
+    if [[ ! -d "${repo_dir}/.git" ]]; then
+      failures+=("${repo_name}: not a git repository")
+      continue
+    fi
+
+    if git -C "${repo_dir}" pull --ff-only >/dev/null 2>&1; then
+      successes+=("${repo_name}")
+    else
+      failures+=("${repo_name}: git pull --ff-only failed")
+    fi
+  done
+  shopt -u nullglob
+
+  if (( ${#successes[@]} > 0 )); then
+    log "Updated: $(join_by ', ' "${successes[@]}")"
+  else
+    log "Updated: none"
+  fi
+
+  if (( ${#failures[@]} > 0 )); then
+    error "Failed:"
+    printf '  %s\n' "${failures[@]}" >&2
+    exit 1
+  fi
+}
+
+cmd_load() {
+  local load_all=0
+
+  if [[ $# -eq 2 && "$1" == "--all" ]]; then
+    load_all=1
+    shift
+  fi
+
+  if [[ $# -ne 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  local name="$1"
+  local repo_dir
+  local source_claude
+  local target_claude
+  local entry
+  local source_path
+  local target_path
+  local -a entries=()
+  local -a selected=()
+
+  repo_dir="$(repo_path_for "${name}")"
+  source_claude="${repo_dir}/.claude"
+
+  if [[ ! -d "${repo_dir}" ]]; then
+    error "Unknown repository: ${name}"
+    exit 1
+  fi
+
+  if [[ ! -d "${source_claude}" ]]; then
+    error "Repository '${name}' does not contain a .claude directory"
+    exit 1
+  fi
+
+  if ! target_claude="$(find_nearest_claude_dir)"; then
+    error "No .claude directory found in current directory or its parents"
+    exit 1
+  fi
+
+  while IFS= read -r entry; do
+    entries+=("${entry}")
+  done < <(list_source_entries "${source_claude}")
+
+  if (( ${#entries[@]} == 0 )); then
+    error "No entries found under ${source_claude}"
+    exit 1
+  fi
+
+  log "Available entries from '${name}':"
+  local i
+  for i in "${!entries[@]}"; do
+    printf '  %d. %s\n' "$((i + 1))" "${entries[${i}]}"
+  done
+
+  if (( load_all == 1 )); then
+    selected=("${entries[@]}")
+  else
+    while IFS= read -r entry; do
+      selected+=("${entry}")
+    done < <(prompt_for_selection entries)
+
+    if (( ${#selected[@]} == 0 )); then
+      error "No entries selected"
+      exit 1
+    fi
+  fi
+
+  for entry in "${selected[@]}"; do
+    target_path="${target_claude}/${entry}"
+    if [[ -e "${target_path}" || -L "${target_path}" ]]; then
+      error "Target already exists: ${target_path}"
+      exit 1
+    fi
+  done
+
+  for entry in "${selected[@]}"; do
+    source_path="${source_claude}/${entry}"
+    target_path="${target_claude}/${entry}"
+    ln -s "${source_path}" "${target_path}"
+    log "Linked ${target_path} -> ${source_path}"
+  done
+}
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  local command="$1"
+  shift
+
+  case "${command}" in
+    -h|--help|help)
+      usage
+      ;;
+    add)
+      cmd_add "$@"
+      ;;
+    update)
+      cmd_update "$@"
+      ;;
+    load)
+      cmd_load "$@"
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
