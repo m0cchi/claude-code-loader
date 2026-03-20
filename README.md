@@ -16,6 +16,8 @@ Managed repositories are cloned into:
 ~/.claude-code-loader/repositories/<name>
 ```
 
+`<name>` may contain only letters, numbers, `.`, `_`, and `-`.
+
 `ccloader add` accepts repositories even if they do not currently contain a `.claude` directory. In that case it prints a warning, and `load` will fail until `.claude` exists.
 
 ## Load behavior

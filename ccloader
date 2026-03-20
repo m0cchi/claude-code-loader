@@ -27,6 +27,16 @@ ensure_storage() {
   mkdir -p "${REPOSITORIES_DIR}"
 }
 
+validate_name() {
+  local name="$1"
+
+  if [[ ! "${name}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    error "Invalid repository name: ${name}"
+    error "Allowed characters: letters, numbers, dot, underscore, hyphen"
+    exit 1
+  fi
+}
+
 repo_path_for() {
   local name="$1"
   printf '%s\n' "${REPOSITORIES_DIR}/${name}"
@@ -144,6 +154,7 @@ cmd_add() {
   local repository="$2"
   local destination
 
+  validate_name "${name}"
   destination="$(repo_path_for "${name}")"
   ensure_storage
   require_git
@@ -228,6 +239,7 @@ cmd_load() {
   local -a entries=()
   local -a selected=()
 
+  validate_name "${name}"
   repo_dir="$(repo_path_for "${name}")"
   source_claude="${repo_dir}/.claude"
 

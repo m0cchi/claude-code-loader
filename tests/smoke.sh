@@ -113,6 +113,33 @@ test_add_without_claude_warns() {
   }
 }
 
+test_add_rejects_invalid_name() {
+  local home_dir="${TMP_DIR}/home-invalid-name"
+  local remote_repo="${TMP_DIR}/remote-invalid-name"
+
+  mkdir -p "${home_dir}"
+  make_repo "${remote_repo}"
+  mkdir -p "${remote_repo}/.claude/skills"
+  printf 'skill body\n' > "${remote_repo}/.claude/skills/demo.md"
+  commit_all "${remote_repo}" "initial"
+
+  local output
+  set +e
+  output="$(HOME="${home_dir}" "${CCLOADER}" add '../bad' "${remote_repo}" 2>&1)"
+  local status=$?
+  set -e
+
+  assert_eq "1" "${status}" "add exit code for invalid name"
+  [[ "${output}" == *"Invalid repository name"* ]] || {
+    printf 'expected invalid-name output, got: %s\n' "${output}" >&2
+    exit 1
+  }
+  if [[ -e "${home_dir}/.claude-code-loader/repositories/../bad" ]]; then
+    printf 'invalid name should not create paths outside repositories\n' >&2
+    exit 1
+  fi
+}
+
 test_update_reports_failures() {
   local home_dir="${TMP_DIR}/home-update"
   local remote_repo="${TMP_DIR}/remote-update"
@@ -243,6 +270,7 @@ test_load_without_entries_fails() {
 test_add_and_load
 test_load_all
 test_add_without_claude_warns
+test_add_rejects_invalid_name
 test_update_reports_failures
 test_load_conflict_fails_without_partial_links
 test_load_without_target_claude_fails
